@@ -21,7 +21,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEAL
 
 #include <functional>
 #include <memory>
-#include <map>
+#include <list>
 #include <mutex>
 #include <vector>
 
@@ -64,26 +64,26 @@ public:
 
 	void Emit(Args... params)
 	{
-		std::vector<int32_t> idToErase;
-		for (const auto& slot : m_slots)
+		std::vector<std::shared_ptr<SlotFn>> funcs;
+		std::vector<std::weak_ptr<SlotFn>> validSlots;
 		{
-			if (const auto sharedFn = slot.second.lock())
+			std::lock_guard<std::mutex> lg(m_mutex);
+			validSlots.reserve(m_slots.size());
+			for (auto& slot : m_slots)
 			{
-				(*sharedFn)(params...);
+				if (const auto sharedFn = slot.lock())
+				{
+					funcs.push_back(sharedFn);
+					validSlots.push_back(std::move(slot));
+				}
 			}
-			else
-			{
-				idToErase.push_back(slot.first);
-			}
-		}
-		if (idToErase.empty())
-			return;
 
-		// remove dead connections
-		std::lock_guard<std::mutex> lg(m_mutex);
-		for (const auto& cid : idToErase)
+			m_slots = std::move(validSlots);
+		}
+
+		for (const auto& slotFun : funcs)
 		{
-			m_slots.erase(cid);
+			(*slotFun)(params...);
 		}
 	}
 
@@ -92,11 +92,10 @@ private:
 	void ConnectInternal(const std::shared_ptr<SlotFn>& sharedSlot)
 	{
 		std::lock_guard<std::mutex> lg(m_mutex);
-		m_slots[++m_slotId] = sharedSlot;
+		m_slots.push_back(sharedSlot);
 	}
 
-	int32_t m_slotId = 0;
-	std::map<int32_t, std::weak_ptr<SlotFn>> m_slots;
+	std::vector<std::weak_ptr<SlotFn>> m_slots;
 	std::mutex m_mutex;
 };
 } // namespace SimpleSignals
