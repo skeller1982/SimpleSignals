@@ -21,7 +21,6 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEAL
 
 #include <functional>
 #include <memory>
-#include <list>
 #include <mutex>
 #include <vector>
 
@@ -51,14 +50,16 @@ public:
 	Connection Connect(const SlotFn& slot)
 	{
 		std::shared_ptr<SlotFn> sharedSlot = std::make_shared<SlotFn>(slot);
-		ConnectInternal(sharedSlot);
+		const std::lock_guard<std::mutex> lg(m_mutex);
+		m_slots.push_back(sharedSlot);
 		return Connection(std::move(sharedSlot));
 	}
 
 	Connection Connect(SlotFn&& slot)
 	{
 		std::shared_ptr<SlotFn> sharedSlot = std::make_shared<SlotFn>(std::move(slot));
-		ConnectInternal(sharedSlot);
+		const std::lock_guard<std::mutex> lg(m_mutex);
+		m_slots.push_back(sharedSlot);
 		return Connection(std::move(sharedSlot));
 	}
 
@@ -67,20 +68,18 @@ public:
 		std::vector<std::shared_ptr<SlotFn>> funcs;
 		std::vector<std::weak_ptr<SlotFn>> validSlots;
 		{
-			std::lock_guard<std::mutex> lg(m_mutex);
+			const std::lock_guard<std::mutex> lg(m_mutex);
 			validSlots.reserve(m_slots.size());
 			for (auto& slot : m_slots)
 			{
-				if (const auto sharedFn = slot.lock())
+				if (auto sharedFn = slot.lock())
 				{
-					funcs.push_back(sharedFn);
+					funcs.push_back(std::move(sharedFn));
 					validSlots.push_back(std::move(slot));
 				}
 			}
-
 			m_slots = std::move(validSlots);
 		}
-
 		for (const auto& slotFun : funcs)
 		{
 			(*slotFun)(params...);
@@ -88,12 +87,6 @@ public:
 	}
 
 private:
-
-	void ConnectInternal(const std::shared_ptr<SlotFn>& sharedSlot)
-	{
-		std::lock_guard<std::mutex> lg(m_mutex);
-		m_slots.push_back(sharedSlot);
-	}
 
 	std::vector<std::weak_ptr<SlotFn>> m_slots;
 	std::mutex m_mutex;
